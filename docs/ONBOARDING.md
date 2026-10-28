@@ -3,7 +3,7 @@
 Findings from analyzing the repository at branch `bob-learning-path-branch`. Everything here comes from files in the repo.
 
 > **Missing from this checkout.** These paths were referenced but do not exist, so nothing is documented about them beyond this note:
-> `booking_system_inventory_hold_service/` (Java), `tests_e2e/`, `docker-compose.yml`, `deployment_scripts/`, `terraform/`, `.github/workflows/`, a `docs/` directory (before this file), a frontend `Dockerfile`, and `start.bat`.
+> `booking_system_inventory_hold_service/` (Java; present on `origin/main`, so section 2 now covers it), `tests_e2e/` (the e2e suite is `e2e/` on `origin/main`), `docker-compose.yml`, the deploy scripts, Terraform, `.github/workflows/` and a frontend `Dockerfile` (all present on `origin/main`; section 6 now covers them under `scripts/aws`, `scripts/ibm` and `scripts/terraform`), a `docs/` directory (before this file), and `start.bat`.
 > If they live on another branch, re-run the analysis against it.
 
 ## Contents
@@ -111,6 +111,8 @@ flowchart LR
 
 ## 2. Tech stack analysis
 
+> The Java inventory hold service is **not on the current branch** (`bob-learning-path-branch`). Its details come from `origin/main`, where it lives in `booking_system_inventory_hold_service/`. It is also on `origin/demo/java-premium-legacy`, `origin/course/reference` and `origin/course/part1-complete`.
+
 ### Stack at a Glance
 
 ```mermaid
@@ -133,23 +135,69 @@ flowchart TB
         BE5["Tests: pytest, pytest-asyncio, pytest-cov<br/>Build: none (python server.py / Docker)"]
         BE1 --- BE2 --- BE3 --- BE4 --- BE5
     end
+    subgraph HS["Hold service: booking_system_inventory_hold_service (origin/main)"]
+        direction TB
+        HS1["Java 17"]
+        HS2["Spring Boot 3.4.1<br/>starter-web (REST), starter-validation"]
+        HS3["Spring Data JPA / Hibernate<br/>+ hibernate-community-dialects (SQLite)"]
+        HS4["Lombok 1.18.36, Jackson (+ jsr310),<br/>java.net.http.HttpClient"]
+        HS5["Build: Maven + spring-boot-maven-plugin<br/>Tests: JUnit via starter-test, H2, WireMock 3.10.0<br/>Coverage: JaCoCo 0.8.12"]
+        HS1 --- HS2 --- HS3 --- HS4 --- HS5
+    end
     DB[("SQLite file<br/>booking.db")]
+    HDB[("SQLite file<br/>holds.db")]
     FE4 -- "HTTP/JSON :8080" --> BE2
     BE3 --> DB
+    HS4 -- "POST /internal/bookings/from-hold" --> BE2
+    HS3 --> HDB
 ```
 
 ### Per-service detail
 
-| Aspect | Backend | Frontend |
-|---|---|---|
-| Language | Python with type hints | TypeScript ~5.9.3 (`strict`, `noUnusedLocals`, `erasableSyntaxOnly`) |
-| Runtime version | Docker uses `python:3.11-slim`; README says 3.8+; **not enforced** | README says Node 18+; **no `engines` field**; Vite 7 likely needs Node 20.19+ or 22.12+ (from memory, not verified in the repo) |
-| Framework | FastAPI, FastMCP, Uvicorn | React ^19.2.0, React Router ^7.12.0 |
-| Key libraries | `sqlalchemy`, `pydantic[email]`, `python-dotenv`, `httpx` | `axios`, `framer-motion`, `tailwindcss`, `lucide-react`, `react-hot-toast`, `date-fns`, `clsx` |
-| Database | SQLite (`./booking.db`); `create_all` on startup; no migrations | None; talks to the backend via `VITE_API_URL` (default `http://localhost:8080`) |
-| Build | None; `python server.py` or Docker | Vite; `npm run build` runs `tsc -b && vite build` |
-| Test tooling | pytest, pytest-asyncio, pytest-cov | None; only `npm run lint` and the build's type check |
-| Lint | none configured | ESLint 9 with react-hooks and react-refresh plugins |
+| Aspect | Backend | Frontend | Hold service (Java) |
+|---|---|---|---|
+| Language | Python with type hints | TypeScript ~5.9.3 (`strict`, `noUnusedLocals`, `erasableSyntaxOnly`) | Java 17 (`java.version`, compiler source/target 17) |
+| Runtime version | Docker uses `python:3.11-slim`; README says 3.8+; **not enforced** | README says Node 18+; **no `engines` field**; Vite 7 likely needs Node 20.19+ or 22.12+ (from memory, not verified in the repo) | JDK 17+, enforced by the pom and checked in `start-java-service.sh`; Maven 3.6+ for local builds |
+| Framework | FastAPI, FastMCP, Uvicorn | React ^19.2.0, React Router ^7.12.0 | Spring Boot 3.4.1 (parent POM `spring-boot-starter-parent`) |
+| Key libraries | `sqlalchemy`, `pydantic[email]`, `python-dotenv`, `httpx` | `axios`, `framer-motion`, `tailwindcss`, `lucide-react`, `react-hot-toast`, `date-fns`, `clsx` | `spring-boot-starter-web`, `-data-jpa`, `-validation`; `lombok` 1.18.36; `jackson-databind` + `jackson-datatype-jsr310`; JDK `java.net.http.HttpClient` for calls to the Python backend |
+| Database | SQLite (`./booking.db`); `create_all` on startup; no migrations | None; talks to the backend via `VITE_API_URL` (default `http://localhost:8080`) | SQLite (`./holds.db`) via `org.xerial:sqlite-jdbc` 3.44.1.0 and `SQLiteDialect`; `ddl-auto=update`, no migration tool. H2 in memory for tests. |
+| Build | None; `python server.py` or Docker | Vite; `npm run build` runs `tsc -b && vite build` | Maven: `mvn clean package` builds an executable jar `inventory-hold-service-1.0.0.jar`; Lombok annotation processor configured; Lombok excluded from the jar |
+| Test tooling | pytest, pytest-asyncio, pytest-cov | None; only `npm run lint` and the build's type check | `spring-boot-starter-test` (JUnit 5, Mockito), H2 2.x, WireMock `wiremock-jetty12` 3.10.0; JaCoCo 0.8.12 (`prepare-agent`, report at the `test` phase) |
+| Lint | none configured | ESLint 9 with react-hooks and react-refresh plugins | none configured |
+| Default port | 8080 | 5173 (dev) | `server.port=8080` in `application.properties`; `start-java-service.sh` overrides to **8082** |
+| Container | `python:3.11-slim` single stage | none in repo | Two-stage: `maven:3.9-eclipse-temurin-17` build, then `eclipse-temurin:17-jre-alpine` runtime (overridable by `RUNTIME_IMAGE`); SQLite at `/app/data/holds.db` |
+
+### Hold service configuration (`application.properties`)
+
+| Property | Value |
+|---|---|
+| `spring.application.name` | `inventory-hold-service` |
+| `python.backend.url` | `${PYTHON_BACKEND_URL:http://localhost:8001}` |
+| `hold.duration.minutes` | `15` |
+| `hold.expiration.check.interval.seconds` | `60` (drives `HoldExpirationScheduler`) |
+| `spring.jpa.hibernate.ddl-auto` | `update` |
+| Logging | `com.galaxium.holdservice` at `DEBUG` |
+| Jackson | dates not written as timestamps; time zone UTC |
+
+### Hold service code layout (`com.galaxium.holdservice`)
+
+| Package | Contents |
+|---|---|
+| `api/` | `HoldController`, `QuoteController`, `HealthController`, `dto/CreateQuoteRequest` |
+| `service/` | `HoldService`, `QuoteService`, `PricingService` |
+| `domain/` | `Hold`, `Quote`, `AuditEvent` JPA entities |
+| `repository/` | `HoldRepository`, `QuoteRepository`, `AuditEventRepository` |
+| `client/` | `PythonBackendClient`, which POSTs to `/internal/bookings/from-hold` |
+| `scheduler/` | `HoldExpirationScheduler` |
+
+Other files in the service folder: `spec.md`, `README.md`, `IMPLEMENTATION_SUMMARY.md`, `docs/MODERNIZATION.md`, `start-java-service.sh`.
+
+### Integration with the Python backend
+
+- The hold service calls the Python backend over HTTP to create a booking from a confirmed hold: `POST {python.backend.url}/internal/bookings/from-hold`. It uses a 10 s connect timeout and a 30 s request timeout, and throws `BookingCreationException` on any non-2xx response.
+- **This endpoint does not exist in the Python `server.py` on the current branch.** It is not among the REST routes listed in section 3. Check `origin/main`'s backend before relying on it.
+- The two services use **different default URLs for the same backend**: `http://localhost:8001` (properties file and start script), `http://python-backend:8000` (Dockerfile env var), while the Python backend itself listens on `8080`. These must be aligned through `PYTHON_BACKEND_URL`.
+- The hold service keeps its own database (`holds.db`), separate from `booking.db`. Seat counts remain in `Flight.seats_available` in the Python database.
 
 ### Stack concerns
 
@@ -158,6 +206,13 @@ flowchart TB
 - **No `engines` declared** in `package.json`.
 - **`datetime.utcnow()`** is used in the booking service, which is deprecated in recent Python versions.
 - **`start.sh` needs bash**, `python3` and `node`.
+- **Hold service:**
+  - `sqlite-jdbc` 3.44.1.0 and `wiremock-jetty12` 3.10.0 are pinned explicitly. Check them against current releases and CVEs.
+  - `hibernate-community-dialects` has no version and is resolved by the Spring Boot BOM.
+  - Port, URL and path defaults disagree across files (see the integration list above).
+  - The Dockerfile image `eclipse-temurin:17-jre-alpine` is not from the Red Hat registry (project security rule), and sets no non-root `USER`.
+  - The Dockerfile's `mvn clean package -DskipTests` skips tests in the image build.
+  - `start.sh` at the repo root does not start this service. It has its own `start-java-service.sh`.
 
 ---
 
@@ -377,70 +432,128 @@ Because of this, the suite never exercises real HTTP, CORS preflight, the `0.0.0
 
 ---
 
+
 ## 6. Deployment model
 
-**Nothing beyond a backend Dockerfile exists.** There is no `docker-compose.yml`, `deployment_scripts/`, `terraform/`, `.github/workflows/` or `docs/` (before this file). Everything else below is from the READMEs and `start.sh`.
+> **Branch note.** The deployment assets are **not on the current branch** (`bob-learning-path-branch`), which has only the backend `Dockerfile`. They are on `origin/main`. The folders you named (`deployment_scripts/aws`, `deployment_scripts/ibm`, `terraform/`) do not exist under those names. On `origin/main` they are **`scripts/aws/`**, **`scripts/ibm/`** and **`scripts/terraform/`**, and the CI workflow is `.github/workflows/bob-review.yml`. A different workflow, `ci.yml`, exists on `origin/course/reference` and `origin/course/part1-complete`. Everything below was read from `origin/main` unless stated.
 
 ### Deployment targets
 
-| Target | Status | Source |
-|---|---|---|
-| Local dev, two processes | Implemented | `start.sh`: venv, `pip install`, `python server.py` (:8080), `npm run dev` (:5173) |
-| Backend Docker container | Implemented | `booking_system_backend/Dockerfile` |
-| Frontend static hosting (Vercel or Netlify) | Documented only | Frontend README: `npm run build`, deploy `dist/` |
-| Frontend Docker (nginx) | Documented only | Sample in the frontend README; no file in the repo. The root README's claim that both services have Dockerfiles is inaccurate. |
-| Production backend via uvicorn | Documented only | Root README: `uvicorn server:app --host 127.0.0.1 --port 8080` |
-| Windows launcher `start.bat` | Referenced, missing | Root README |
-| Compose, Terraform, cloud, Kubernetes | None | Not in the repo |
+Three deployment targets exist, plus two helper paths.
 
-### Containerization
+| # | Target | Entry point | Runs | Database | Status |
+|---|---|---|---|---|---|
+| 1 | **Local / Docker Compose** | `start.sh` (wraps `scripts/local/start_locally.sh`) or `docker-compose.yml` | Backend (:8001), frontend (:5173), optional Java hold service (:8082, profile `hold-service`) | PostgreSQL 14 in compose; SQLite when run natively | Implemented |
+| 2 | **AWS** (ECS Fargate, Terraform) | `scripts/aws/deploy-to-aws.sh` | **Backend and frontend only** | Embedded SQLite in each task | Implemented, with caveats below |
+| 3 | **IBM Cloud Code Engine** | `scripts/ibm/deploy-to-ibm.sh` (and `deploy-to-ibm-simple.sh`) | **Backend, frontend and Java hold service** | Embedded SQLite | Implemented, with caveats below |
+| - | E2E stack (test helper) | `e2e/docker-compose.e2e.yml`, `e2e/run-native.sh` | Backend (:18001) and Java service (:18082), SQLite, 1-minute holds | SQLite | Test only |
+| - | Static hosting (Vercel or Netlify) | Frontend README | Frontend `dist/` only | n/a | Documented only |
 
-**Backend**, `FROM python:3.11-slim`, then `WORKDIR /app`, `COPY . .`, `pip install -r requirements.txt`, `EXPOSE 8080`, `CMD ["python", "server.py"]`.
+### Target comparison
 
-```
-docker build -t galaxium-booking .
-docker run -p 8080:8080 galaxium-booking
-```
+| Aspect | Local / Compose | AWS ECS Fargate | IBM Code Engine |
+|---|---|---|---|
+| Provisioning | `docker compose up` | Terraform (`scripts/terraform/`, AWS provider `~> 5.0`, Terraform `>= 1.0`) | `ibmcloud ce` CLI commands in a script, no IaC |
+| Image registry | local build | Amazon ECR (`galaxium-booking-backend`, `-frontend`), scan on push, AES256, keep last 10 images | IBM Container Registry (`<region>.icr.io/galaxium`), via registry secret |
+| Services deployed | postgres, backend, frontend, java-service (optional) | backend, frontend | backend, frontend, hold-service |
+| Ingress and routing | host ports 8001 / 5173 / 8082 | One public ALB. `/api/*` goes to the backend target group, `/*` to the frontend. | One public HTTPS URL per app. The frontend's nginx proxies `/api/` to the backend. |
+| Service-to-service | compose DNS (`backend`, `java-service`) | none (no hold service) | `http://<app-name>` inside the project (`--visibility project` for the Java app) |
+| Scaling | none | Application Auto Scaling, **min 0 / max 4**, target tracking on ALB requests per target (100), scheduled scale down to 0 at 02:00 UTC and up at 08:00 UTC | `--min-scale 0 --max-scale 3`; scale-down delay 1800 s (backend, Java) |
+| Sizing | n/a | 256 CPU units / 512 MB per task (Fargate) | backend and frontend 0.25 vCPU / 0.5 GB; Java 0.5 vCPU / 1 GB |
+| Networking | compose network | VPC `10.0.0.0/16`, 2 public and 2 private subnets, IGW, optional NAT, 2 security groups | Managed by Code Engine |
+| Logging | container logs | CloudWatch log groups (`/ecs/galaxium-booking-*`), 7 days (30 in prod) | `ibmcloud ce application logs` |
+| Idle cost | n/a | ALB (and NAT if enabled) still billed at zero tasks; the script estimates about $78/month for NAT, ALB and Fargate | about $0 when scaled to zero (script estimate) |
+| Teardown | `docker compose down` | `scripts/aws/teardown-aws.sh` (destroys everything, deletes ECR images) | `scripts/ibm/teardown-ibm.sh` (deletes apps only; keeps project, registry and images) |
+| Extras | `scripts/local/test-containers.sh` | `scale-to-zero.sh`, `scale-up.sh` | `check-ibm-status.sh` |
 
-**Frontend**: no Dockerfile. The README sample is `node:18-alpine` build stage, then `nginx:alpine` serving `dist/` on port 80.
+### How each service is containerized (`origin/main`)
 
-| Issue | Component |
+| Service | Base image(s) | Port | Notes |
+|---|---|---|---|
+| Backend | `python:3.11-slim`, pinned to `linux/amd64` | 8080 | Installs `requirements.txt` first for layer caching, then `COPY . .`. Runs `uvicorn server:app --host 0.0.0.0 --port 8080`. A `HEALTHCHECK` calls `/`. `.dockerignore` excludes `*.db`, `.venv/`, `tests/`, `.env`. |
+| Frontend | build `node:18-alpine`, run `nginx:alpine`, both `linux/amd64` | 8080 | `npm ci`, then `npm run build` with `ARG VITE_API_URL=/api` (same-origin default). nginx serves `dist/`, has an SPA fallback, `/health`, gzip, security headers, and a one-year cache for static assets. |
+| Java hold service | build `maven:3.9-eclipse-temurin-17`, run `eclipse-temurin:17-jre-alpine` (overridable with `RUNTIME_IMAGE`) | 8080 | Maven build inside Docker with `-DskipTests`; SQLite at `/app/data/holds.db`; env `PYTHON_BACKEND_URL`. |
+
+`docker-compose.yml` wires these together: Postgres 14 (volume `postgres_data`), backend (`DATABASE_URL`, `CORS_ORIGINS`, `JAVA_SERVICE_URL`, `SEED_DEMO_DATA`), the Java service behind the `hold-service` profile (volume `java_data`), and the frontend built with `VITE_API_URL=http://localhost:8001`. Each service has a health check.
+
+### Infrastructure provisioned (AWS Terraform)
+
+| File | Resources |
 |---|---|
-| No `.dockerignore`; `COPY . .` would include `.venv`, `tests/`, any local `booking.db` | Backend |
-| Test dependencies installed in the runtime image | Backend |
-| Unpinned dependencies; not reproducible | Backend |
-| Base image is not a Red Hat minimal image (project security rule) | Backend |
-| Runs as root; no `USER` | Backend |
-| SQLite inside the container, no volume; data resets on restart and `seed()` runs on every start | Backend |
-| `/` health endpoint exists but no `HEALTHCHECK` | Backend |
-| `VITE_API_URL` is build-time, but the sample doesn't take it as a build arg | Frontend sample |
-| No SPA fallback in nginx, so `/flights` and `/bookings` return 404 on refresh | Frontend sample |
+| `vpc.tf` | VPC, internet gateway, 2 public and 2 private subnets, route tables, optional NAT gateway(s) and EIP(s) |
+| `security_groups.tf` | ALB group (80 and 443 from `0.0.0.0/0`); ECS tasks group (all TCP from the ALB group only) |
+| `alb.tf` | Internet-facing ALB, HTTP :80 listener (default to frontend), rule `/api/*` to the backend (health `/api/`), rule `/*` to the frontend (health `/health`) |
+| `ecs.tf` | ECS cluster (Container Insights on), two Fargate task definitions and services, both with `assign_public_ip = true` in the **public** subnets |
+| `ecr.tf` | Two repositories with scan-on-push and a keep-last-10 lifecycle policy |
+| `iam.tf` | ECS task execution role (with the AWS managed policy) and a task role with no policies |
+| `autoscaling.tf` | Scalable targets (0 to 4), target-tracking policies, scheduled scale down and up for both services |
+| `cloudwatch.tf` | Two log groups |
+| `rds.tf` | Intentionally empty; RDS was removed in favor of embedded SQLite |
+| `outputs.tf` | `vpc_id`, `alb_dns_name`, `alb_url`, both ECR URLs, `ecs_cluster_name` |
+| `terraform.tfvars.example` | Sets `enable_nat_gateway = false`, though the variable default is `true` |
 
-### Infrastructure provisioned
+IBM Cloud has **no IaC**. The script creates or updates the Code Engine apps imperatively, creates a registry namespace and a registry secret (possibly a new IAM API key), and sets environment variables for service URLs and CORS.
 
-None. There are no cloud resources, no database service, no secrets management, no networking config and no Terraform. The only runtime dependency is the local SQLite file. CORS is wide open (`*` with credentials) and would need tightening for any real deployment.
+### How the deploy scripts work
+
+**AWS (`deploy-to-aws.sh`)**: check tools (`aws`, `docker`, `terraform`, `jq`) and credentials; copy `terraform.tfvars` from the example; `terraform init`, `plan`, `apply`; read Terraform outputs; log in to ECR; build and push backend and frontend images (`linux/amd64`, tag `latest`); force a new ECS deployment; poll until `runningCount >= 1` (up to about 5 minutes); then curl `/api/`, `/` and `/health` on the ALB.
+
+**IBM (`deploy-to-ibm.sh`)**: check tools and login; target region (default `us-south`) and resource group; select or create the Code Engine project; create the registry namespace; build and push three images; deploy in dependency order (backend, Java service, set `JAVA_SERVICE_URL` on the backend, frontend, then set `CORS_ORIGINS` on the backend); wait for each app to report `Ready`; curl each endpoint. `deploy-to-ibm-simple.sh` instead lets Code Engine build from source (`--build-source .`) and builds local images that it never uses.
 
 ### CI/CD
 
-None. No `.github/` directory and no pipeline file for any CI system. Nothing automatically runs `pytest`, `npm run lint` or `npm run build`; nothing builds or scans images; nothing deploys. The project security rules call for SAST, dependency scanning and automated security tests in CI, and none are configured.
+| Item | `origin/main` | `origin/course/reference` and `part1-complete` | Current branch |
+|---|---|---|---|
+| Workflow | `.github/workflows/bob-review.yml` | `.github/workflows/ci.yml` | none |
+| Trigger | `pull_request` (opened, synchronize, reopened); skips drafts and bot authors | `pull_request` and `push` to `main` | n/a |
+| What it does | Installs Bob Shell and runs `bob run` on the PR diff in two passes (fast scan, then targeted deep-dive), then posts a review comment with `gh pr review`. Needs the `BOBSHELL_API_KEY` secret. | Backend `pytest` (Python 3.11); frontend `npm ci`, `lint`, `build` (Node 22); `e2e` job (needs `backend`) runs the compose-based e2e suite | n/a |
+| Deploys anything? | **No** | **No** | n/a |
 
-### Current state
+- **No pipeline deploys to AWS or IBM Cloud.** Deployment is manual: a person runs the shell scripts. There is no build-and-push workflow, no image scanning step, no Terraform plan or apply job, no environment promotion and no rollback automation.
+- **No test CI on `origin/main`.** The test workflow `ci.yml` exists only on the course branches, so `main` has no automated test, lint or build check on pull requests. The review job also posts AI review comments only; it enforces nothing.
+- **Hold service is not in CI on any branch I read.** `ci.yml` runs backend pytest, frontend lint and build, and the e2e suite, but no Maven build or Java tests outside the e2e containers.
+
+### Deployment flow
 
 ```mermaid
 flowchart LR
-    Dev[Developer] -->|start.sh| Local["Local: backend :8080 + Vite :5173"]
-    Dev -->|docker build| Img[Backend image]
-    Img -->|docker run -p 8080:8080| Ctr["Container<br/>ephemeral SQLite"]
-    Dev -.->|"npm run build (manual)"| Dist["dist/"]
-    Dist -.->|manual upload| Host["Vercel / Netlify / nginx"]
+    Dev[Developer] -->|"start.sh / docker compose up"| Local["Local / Compose<br/>backend :8001, frontend :5173,<br/>Java :8082 (profile), Postgres"]
+    Dev -->|"scripts/aws/deploy-to-aws.sh"| TF["Terraform<br/>VPC, ALB, ECS, ECR, CloudWatch,<br/>Auto Scaling"]
+    TF --> ECR["Amazon ECR<br/>backend + frontend images"]
+    ECR --> ECS["ECS Fargate<br/>backend + frontend<br/>(no hold service)"]
+    ALB["Public ALB"] -->|"/api/*"| ECS
+    ALB -->|"/*"| ECS
+    Dev -->|"scripts/ibm/deploy-to-ibm.sh"| ICR["IBM Container Registry<br/>3 images"]
+    ICR --> CE["IBM Code Engine<br/>frontend, backend, hold service<br/>scale to zero"]
+    PR[Pull request] -->|"bob-review.yml"| Review["Bob review comment<br/>(no deploy, no tests)"]
 ```
 
-Solid lines exist today; dotted lines are documented manual steps.
+### Findings and risks
+
+| # | Severity | Finding |
+|---|---|---|
+| 1 | High | **AWS omits the Java hold service.** Terraform and `deploy-to-aws.sh` deploy backend and frontend only, so the quote and hold endpoints on the backend have no `JAVA_SERVICE_URL` target on AWS. IBM deploys all three. The two targets are not functionally equivalent. |
+| 2 | High | **AWS script paths assume `./terraform/`.** The scripts `cd terraform` and use `terraform/terraform.tfvars`, but the Terraform code lives in `scripts/terraform/`, and there is no `terraform/` folder at the repo root on `origin/main`. The wrapper scripts the README mentions (`deploy-aws.sh`, `deploy-ibm.sh`) are not at the root either. Running the script as documented from the repo root would fail at the Terraform step. Verify before relying on it. |
+| 3 | High | **Frontend and ALB port mismatch on AWS.** The frontend image listens on 8080 (`nginx.conf`, `EXPOSE 8080`, health check on 8080), but the Terraform frontend task, target group and health check use port **80**. The backend is consistent on 8080. The frontend service would likely fail health checks. Verify before relying on it. |
+| 4 | High | **The ALB serves HTTP only.** There is no HTTPS listener or certificate, even though the security group opens 443 and the project rules require TLS 1.2 or later. |
+| 5 | High | **Frontend nginx has a hard-coded IBM backend URL.** `nginx.conf` proxies `/api/` to `https://galaxium-backend.1xbq7f8yb8jb.us-south.codeengine.appdomain.cloud`. That works only on IBM and is not configurable. On AWS the ALB routes `/api/*` first, so it masks the problem; in local compose the frontend is built with `VITE_API_URL=http://localhost:8001`, so it bypasses the proxy. |
+| 6 | Medium | **SQLite on ephemeral storage.** On AWS and IBM each task or instance has its own database that is lost on restart or scale-to-zero, and `SEED_DEMO_DATA=true` reseeds it. With more than one task, each would hold different data. The Java `holds.db` has the same problem. |
+| 7 | Medium | **Public tasks.** ECS tasks have public IPs in public subnets; the NAT gateway and private subnets are not used by the services. |
+| 8 | Medium | **IBM defaults are personal.** Project `galaxium-travel-services-maxjesch` and resource group `max_jesch_rg` are hard-coded defaults (also in `check-ibm-status.sh` and the simple script). Override them with environment variables. The registry script may also create a new IAM API key. |
+| 9 | Medium | **IBM Java service reachability.** `deploy-to-ibm.sh` uses `http://<app-name>`, while the simple script uses `http://<app>.<project>.svc.cluster.local`. The two scripts use different internal addressing. |
+| 10 | Medium | **`latest` tags and no pinning.** All images deploy as `latest`; there is no digest or version tag, so rollback is manual. Backend `requirements.txt` on `main` is now pinned, but `psycopg[binary]` has no version. |
+| 11 | Medium | **Scale-to-zero schedule conflict.** Scheduled actions set min and max to 0 at 02:00 UTC and 0 to 4 at 08:00 UTC, while the ECS services also have `desired_count = 1`. Cold starts follow every scale-up. |
+| 12 | Low | **Containers run as root with non-RHEL bases.** None of the three Dockerfiles sets a non-root `USER`, and none uses a Red Hat registry image (project security rule). `node:18-alpine` is also past end of life. |
+| 13 | Low | **Port inconsistencies.** Backend `server.py` runs on 8001 when started directly, the Docker image on 8080, compose maps 8001:8080, the Java service defaults are 8080, 8082 or 18082, depending on how it is run. |
+| 14 | Low | **IAM and logging.** The ECS task role has no policies; log retention is 7 days outside prod, below the project rule of 90 days for security logs. |
+| 15 | Low | **Bash only.** All scripts need bash, `jq`, and for AWS and IBM a logged-in CLI, so Windows users need WSL or Git Bash. |
 
 ### Recommended next steps
 
-1. Add a frontend `Dockerfile` with a `VITE_API_URL` build arg and an nginx SPA fallback.
-2. Add a `docker-compose.yml` with a named volume for `booking.db`.
-3. Harden the backend image: non-root `USER`, `.dockerignore`, split runtime and dev requirements, pin dependencies, add a `HEALTHCHECK`.
-4. Add a CI workflow that runs `pytest`, `npm run lint`, `npm run build`, dependency scanning and an image scan.
-5. Restrict CORS origins and decide the bind host per environment.
+1. Decide whether AWS should include the Java service, and add it to Terraform and the script, or document the gap.
+2. Fix the path assumptions in `scripts/aws/*.sh` (or add the missing root wrappers) and the frontend port mismatch in `ecs.tf`/`alb.tf`.
+3. Make the frontend's `/api/` upstream configurable and remove the hard-coded IBM hostname.
+4. Add HTTPS (ACM certificate and a 443 listener) on AWS.
+5. Add a CI workflow on `main` that runs backend `pytest`, frontend `lint` and `build`, a Maven test, an image scan and a dependency scan.
+6. Replace per-task SQLite with a managed database (the compose stack already uses Postgres) if more than one instance will run.
+7. Tag images with the commit SHA instead of `latest`, and run containers as a non-root user.
